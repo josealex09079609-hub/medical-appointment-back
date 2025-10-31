@@ -1,0 +1,20 @@
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Serverless
+.serverless/
+.webpack/
+
+# Compilación
+dist/
+build/
+
+# Env
+.env
+.env.local
+
+# DynamoDB local data
+*.db
+data/

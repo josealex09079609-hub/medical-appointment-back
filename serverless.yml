@@ -1,0 +1,110 @@
+service: medical-appointment-backend
+frameworkVersion: "3"
+useDotenv: true
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  region: us-east-1
+  stage: dev
+  environment:
+    AWS_ACCESS_KEY_ID: fake
+    AWS_SECRET_ACCESS_KEY: fake
+    DYNAMODB_TABLE: ${opt:dynamoTable, 'AppointmentTable'}
+    SQS_CONFIRM_URL: ${env:SQS_CONFIRM_URL}
+    SQS_PE_URL: ${env:SQS_PE_URL}
+    SQS_CL_URL: ${env:SQS_CL_URL}
+    SNS_TOPIC_ARN: ${env:SNS_TOPIC_ARN}
+    MYSQL_HOST: ${env:MYSQL_HOST}
+    MYSQL_USER: ${env:MYSQL_USER}
+    MYSQL_PASS: ${env:MYSQL_PASS}
+    MYSQL_DB: ${env:MYSQL_DB}
+    EVENT_BUS_NAME: ${env:EVENT_BUS_NAME, 'default'}
+
+plugins:
+  - serverless-plugin-typescript
+  - serverless-dotenv-plugin
+  - serverless-offline
+
+functions:
+  appointment:
+    handler: src/infrastructure/lambdas/appointment.handler
+    events:
+      - httpApi:
+          path: /appointments
+          method: post
+      - httpApi:
+          path: /appointments/{insuredId}
+          method: get
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - SqsConfirmQueue
+              - Arn
+
+  appointment_pe:
+    handler: src/infrastructure/lambdas/appointment_pe.handler
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - SqsPeQueue
+              - Arn
+
+  appointment_cl:
+    handler: src/infrastructure/lambdas/appointment_cl.handler
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - SqsClQueue
+              - Arn
+
+resources:
+  Resources:
+    AppointmentTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.DYNAMODB_TABLE}
+        AttributeDefinitions:
+          - AttributeName: appointmentId
+            AttributeType: S
+          - AttributeName: insuredId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: appointmentId
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: insuredIdIndex
+            KeySchema:
+              - AttributeName: insuredId
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+        BillingMode: PAY_PER_REQUEST
+
+    SnsTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: appointment-topic
+
+    SqsPeQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: SQS_PE
+
+    SqsClQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: SQS_CL
+
+    SqsConfirmQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: SQS_Confirmations
+
+custom:
+  serverless-offline:
+    httpPort: 3005
+    environment:
+      IS_OFFLINE: true
