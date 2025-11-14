@@ -20,7 +20,13 @@ export class CreateAppointmentUseCase {
     };
 
     await this.repo.save(appointment);
-    await this.snsPublisher.publish(appointment);
+
+    try {
+      await this.snsPublisher.publish(appointment);
+    } catch (err) {
+      console.error("[SNS ERROR]", err);
+      // 👇 No relanzamos para no romper el flujo HTTP
+    }
 
     return appointment;
   }

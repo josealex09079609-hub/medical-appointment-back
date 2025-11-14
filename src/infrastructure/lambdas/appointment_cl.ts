@@ -6,26 +6,44 @@ const mysqlRepo = new MySQLRepository();
 const eb = new EventBridgePublisher();
 
 export const handler = async (event: SQSEvent) => {
+  console.log("📩 Received SQS Event (CL):", JSON.stringify(event));
+
   for (const record of event.Records) {
-    const payload = JSON.parse(record.body);
     try {
-      // Guardar en MySQL
+      const body = JSON.parse(record.body);
+
+      let payload;
+
+      // 🟨 Caso SNS → SQS (el más común)
+      if (body.Message) {
+        payload = JSON.parse(body.Message);
+      } 
+      // 🟦 Caso SQS directo
+      else {
+        payload = body;
+      }
+
+      console.log("[CL] Payload FINAL:", payload);
+
       await mysqlRepo.insertAppointment({
         appointmentId: payload.appointmentId,
         insuredId: payload.insuredId,
         scheduleId: payload.scheduleId,
         countryISO: payload.countryISO,
-        status: 'completed',
+        status: "completed",
         createdAt: payload.createdAt
       });
 
-      // Publicar evento de conformidad
-      await eb.publish(process.env.EVENT_BUS_NAME || 'default', {
+      await eb.publish(process.env.EVENT_BUS_NAME || "default", {
         appointmentId: payload.appointmentId,
-        status: 'completed'
+        status: "completed"
       });
+
+      console.log("✅ Procesado appointment CL:", payload.appointmentId);
+
     } catch (err) {
-      console.error('Error procesando SQS_CL record', err);
+      console.error("❌ Error procesando SQS_CL record:", err);
     }
   }
 };
+

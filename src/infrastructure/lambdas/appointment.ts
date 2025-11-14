@@ -1,5 +1,4 @@
-import { APIGatewayProxyEventV2  } from 'aws-lambda';
-import 'source-map-support/register';
+import { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { DynamoDBRepository } from '../db/DynamoDBRepository';
 import { SNSPublisher } from '../../application/services/SNSPublisher';
 import { CreateAppointmentUseCase } from '../../application/usecases/CreateAppointmentUseCase';
@@ -10,8 +9,7 @@ const sns = new SNSPublisher();
 
 export const handler = async (event: APIGatewayProxyEventV2) => {
   try {
-    // Para httpApi (v2)
-    const method = event.requestContext.http.method;
+    const method = event.requestContext.http.method; // ✅ correcto en HTTP API v2
 
     if (method === 'POST') {
       const body = JSON.parse(event.body || '{}');
@@ -35,6 +33,7 @@ export const handler = async (event: APIGatewayProxyEventV2) => {
 
     if (method === 'GET') {
       const insuredId = event.pathParameters?.insuredId;
+
       if (!insuredId) {
         return { statusCode: 400, body: JSON.stringify({ message: 'insuredId required' }) };
       }
@@ -46,6 +45,7 @@ export const handler = async (event: APIGatewayProxyEventV2) => {
     }
 
     return { statusCode: 405, body: 'Method Not Allowed' };
+
   } catch (err: any) {
     console.error(err);
     return { statusCode: 500, body: JSON.stringify({ message: 'Internal error', error: err.message }) };

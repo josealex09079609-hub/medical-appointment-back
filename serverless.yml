@@ -7,24 +7,60 @@ provider:
   runtime: nodejs18.x
   region: us-east-1
   stage: dev
+  profile: default
   environment:
-    AWS_ACCESS_KEY_ID: fake
-    AWS_SECRET_ACCESS_KEY: fake
     DYNAMODB_TABLE: ${opt:dynamoTable, 'AppointmentTable'}
+    # Estas URLs ya no son estrictamente necesarias para el flujo,
+    # pero puedes dejarlas si las usas en otro lado
     SQS_CONFIRM_URL: ${env:SQS_CONFIRM_URL}
     SQS_PE_URL: ${env:SQS_PE_URL}
     SQS_CL_URL: ${env:SQS_CL_URL}
-    SNS_TOPIC_ARN: ${env:SNS_TOPIC_ARN}
-    MYSQL_HOST: ${env:MYSQL_HOST}
-    MYSQL_USER: ${env:MYSQL_USER}
-    MYSQL_PASS: ${env:MYSQL_PASS}
-    MYSQL_DB: ${env:MYSQL_DB}
+    SNS_TOPIC_ARN:
+      Ref: SnsTopic
+    MYSQL_HOST: appointmentsdb.cuvi6wk8mrfg.us-east-1.rds.amazonaws.com
+    MYSQL_USER: admin
+    MYSQL_PASS: password12
+    MYSQL_DB: appointmentsdb
     EVENT_BUS_NAME: ${env:EVENT_BUS_NAME, 'default'}
+
+  iamRoleStatements:
+    # DynamoDB - guardar y consultar citas
+    - Effect: Allow
+      Action:
+        - dynamodb:PutItem
+        - dynamodb:Query
+        - dynamodb:UpdateItem
+      Resource:
+        - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.DYNAMODB_TABLE}
+        - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.DYNAMODB_TABLE}/index/*
+
+    # SNS - permitir publicar eventos desde appointment
+    - Effect: Allow
+      Action:
+        - sns:Publish
+      Resource:
+        - !Ref SnsTopic
+
+    # EventBridge - permitir enviar eventos desde appointment_pe / appointment_cl
+    - Effect: Allow
+      Action:
+        - events:PutEvents
+      Resource: "*"
+
+    # SQS - permitir leer y borrar mensajes de todas tus colas
+    - Effect: Allow
+      Action:
+        - sqs:ReceiveMessage
+        - sqs:DeleteMessage
+        - sqs:GetQueueAttributes
+      Resource:
+        - !GetAtt SqsPeQueue.Arn
+        - !GetAtt SqsClQueue.Arn
+        - !GetAtt SqsConfirmQueue.Arn
 
 plugins:
   - serverless-plugin-typescript
   - serverless-dotenv-plugin
-  - serverless-offline
 
 functions:
   appointment:
@@ -36,11 +72,6 @@ functions:
       - httpApi:
           path: /appointments/{insuredId}
           method: get
-      - sqs:
-          arn:
-            Fn::GetAtt:
-              - SqsConfirmQueue
-              - Arn
 
   appointment_pe:
     handler: src/infrastructure/lambdas/appointment_pe.handler
@@ -60,8 +91,20 @@ functions:
               - SqsClQueue
               - Arn
 
+  confirmationProcessor:
+    handler: src/infrastructure/lambdas/confirmationProcessor.handler
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - SqsConfirmQueue
+              - Arn
+
 resources:
   Resources:
+    # --------------------
+    # DynamoDB de citas
+    # --------------------
     AppointmentTable:
       Type: AWS::DynamoDB::Table
       Properties:
@@ -83,11 +126,17 @@ resources:
               ProjectionType: ALL
         BillingMode: PAY_PER_REQUEST
 
+    # --------------------
+    # SNS Topic
+    # --------------------
     SnsTopic:
       Type: AWS::SNS::Topic
       Properties:
         TopicName: appointment-topic
 
+    # --------------------
+    # Colas SQS
+    # --------------------
     SqsPeQueue:
       Type: AWS::SQS::Queue
       Properties:
@@ -103,8 +152,102 @@ resources:
       Properties:
         QueueName: SQS_Confirmations
 
+    # --------------------
+    # SNS → SQS_PE / SQS_CL con filtros por país
+    # --------------------
+    SnsToPeSubscription:
+      Type: AWS::SNS::Subscription
+      Properties:
+        TopicArn: !Ref SnsTopic
+        Protocol: sqs
+        Endpoint: !GetAtt SqsPeQueue.Arn
+        FilterPolicy:
+          countryISO:
+            - "PE"
+
+    SnsToClSubscription:
+      Type: AWS::SNS::Subscription
+      Properties:
+        TopicArn: !Ref SnsTopic
+        Protocol: sqs
+        Endpoint: !GetAtt SqsClQueue.Arn
+        FilterPolicy:
+          countryISO:
+            - "CL"
+
+    # Permitir que SNS envíe mensajes a SqsPeQueue
+    SqsPeQueuePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues:
+          - !Ref SqsPeQueue
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Sid: AllowSnsSendMessagePe
+              Effect: Allow
+              Principal:
+                Service: sns.amazonaws.com
+              Action: sqs:SendMessage
+              Resource: !GetAtt SqsPeQueue.Arn
+              Condition:
+                ArnEquals:
+                  aws:SourceArn: !Ref SnsTopic
+
+    # Permitir que SNS envíe mensajes a SqsClQueue
+    SqsClQueuePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues:
+          - !Ref SqsClQueue
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Sid: AllowSnsSendMessageCl
+              Effect: Allow
+              Principal:
+                Service: sns.amazonaws.com
+              Action: sqs:SendMessage
+              Resource: !GetAtt SqsClQueue.Arn
+              Condition:
+                ArnEquals:
+                  aws:SourceArn: !Ref SnsTopic
+
+    # --------------------
+    # EventBridge → SqsConfirmQueue
+    # --------------------
+    AppointmentConfirmedRule:
+      Type: AWS::Events::Rule
+      Properties:
+        EventPattern:
+          source:
+            - "medical.appointments"
+          detail-type:
+            - "appointment.confirmed"
+        Targets:
+          - Arn: !GetAtt SqsConfirmQueue.Arn
+            Id: "SqsConfirmTarget"
+
+    SqsConfirmQueuePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues:
+          - !Ref SqsConfirmQueue
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Sid: AllowEventBridgeSendMessage
+              Effect: Allow
+              Principal:
+                Service: events.amazonaws.com
+              Action: sqs:SendMessage
+              Resource: !GetAtt SqsConfirmQueue.Arn
+
 custom:
-  serverless-offline:
-    httpPort: 3005
-    environment:
-      IS_OFFLINE: true
+  dotenv:
+    exclude:
+      - AWS_REGION
+      - AWS_ACCESS_KEY_ID
+      - AWS_SECRET_ACCESS_KEY
+      - IS_OFFLINE
+      - SNS_TOPIC_ARN
